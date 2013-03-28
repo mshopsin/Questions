@@ -39,7 +39,7 @@ CREATE TABLE question_replies(
 CREATE TABLE question_actions(
   id INTEGER PRIMARY KEY,
   question_id INTEGER NOT NULL,
-  type ENUM('redact', 'close', 'reopen'),
+  action INTEGER, --  --ENUM (1'redact', 2'close', 3'reopen'),
 
   FOREIGN KEY(question_id) REFERENCES question(id)
 );
@@ -56,9 +56,9 @@ CREATE TABLE question_likes(
 
 INSERT INTO user ('fname','lname','is_instructor')
      VALUES ('Kush','Patel',0),
-     VALUES ('Ned','Ruggeri',1);
+      ('Ned','Ruggeri',1);
 
-INSERT INTO question ('title','body','author')
+INSERT INTO question ('title','body','author_id')
      VALUES ('Who is leaving sleeping mats out?', 'Land Lord coming today', 2),
-     VALUES ('JOBS', 'Who needs one?', 1);
+      ('JOBS', 'Who needs one?', 1);
 
