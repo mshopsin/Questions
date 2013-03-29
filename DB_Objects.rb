@@ -1,10 +1,23 @@
 require 'sqlite3'
+require 'singleton'
 
-$db = SQLite3::Database.new( "questions3.db" )
-$db.results_as_hash = true
+#DB = SQLite3::Database.new( "questions3.db" )
+#DB.instance.results_as_hash = true
+
+class DB < SQLite3::Database
+  include Singleton
+
+  def initialize
+    super("questions3.db")
+    self.results_as_hash = true
+    self.type_translation = true
+  end
+
+end
 
 class User
-  attr_reader :id, :fname, :lname, :is_instructor
+  attr_reader :id
+  attr_accessor :fname, :lname, :is_instructor
 
   def initialize(row)
     @id    = row['id']
@@ -21,30 +34,66 @@ class User
      # INSERT INTO question ('title','body','author_id')
      #      VALUES (title, body, id)
      #    SQL
-    $db.execute("INSERT INTO question ('title','body','author_id') VALUES (?, ?, ?);",
+    DB.instance.execute("INSERT INTO question ('title','body','author_id') VALUES (?, ?, ?);",
    title,body,id)
   end
 
   def like(question_id)
-    $db.execute("INSERT INTO question_likes ('user_id','question_id')
+    DB.instance.execute("INSERT INTO question_likes ('user_id','question_id')
                       VALUES (?,?);", id, question_id)
   end
 
   def average_karma
-    $db.execute("SELECT avg(cnt) from(SELECT COUNT(*) AS cnt FROM question_likes WHERE user_id = ? GROUP BY question_id);",
-       @id).first[0]
+    query = <<-SQL
+      SELECT AVG(CNT)
+       FROM(SELECT COUNT(*)
+                AS cnt
+              FROM question_likes
+              JOIN question
+                ON(question_likes.question_id = question.id)
+              JOIN user
+                ON(question.author_id = user.id)
+             WHERE user.id = ?
+          GROUP BY question_likes.question_id)
+    SQL
+
+    DB.instance.execute(query, @id)
   end
 
-  def create_reply
+  def save_insert()
+    insert = <<-SQL
+      INSERT INTO question('fname','lname', 'is_instructor')
+          VALUES (?, ?, ?)
+    SQL
+    DB.instance.execute(insert, @fname, @lname, @is_instructor)
+    @id = DB.instance.last_insert_row_id
   end
 
-  def follow
+  def save_update
+    update = <<-SQL
+      UPDATE question
+      SET fname = ?,
+          lname = ?,
+          is_instructor = ?
+      WHERE id = ?
+    SQL
+    DB.instance.execute(insert,@fname, @lname, @is_instructor, @id)
   end
+
+  def save
+    if @id.nil?
+      save_insert
+    else
+      save_update
+    end
+  end
+
 
 end
 
 class Question
-  attr_accessor :student, :num_likes, :followers, :title
+  attr_reader :id
+  attr_accessor :author_id, :num_likes, :followers, :title, , :body
 
   def initialize(row)
     @id = row['id']
@@ -55,101 +104,174 @@ class Question
 
   def num_likes
     query = <<-SQL
-      SELECT COUNT(*) AS likes
+      SELECT COUNT(*)
+          AS likes
         FROM question_likes
-      WHERE question_likes.question_id = ?
+       WHERE question_likes.question_id = ?
     SQL
 
-    $db.execute(query, @id).first['likes'];
+    DB.instance.execute(query, @id).first['likes'];
   end
 
   def self.most_liked(n)
-    $db.execute("SELECT question_id, count(*) FROM question_likes GROUP BY question_id ORDER BY count(*) DESC LIMIT ?", n).map do |question|
-      question['question_id']
-    end
+    query = <<-SQL
+    SELECT *
+      FROM question_likes
+     WHERE question_likes.id
+        IN (SELECT question_id
+              FROM question_likes
+          GROUP BY question_id
+          ORDER BY COUNT(*) DESC LIMIT ?)
+    SQL
+
+    DB.instance.execute(query, n).map { |question| Question.new(question) }
   end
 
   def followers ## returns array of id's of followers
     query = <<-SQL
-      SELECT follower_id
-          AS follower
-        FROM question_followers
-       WHERE question_id = ?
+    SELECT user.id, user.fname, user.lname, user.is_instructor
+      FROM question
+      JOIN question_followers
+        ON (question.id = question_followers.question_id)
+      JOIN user
+        ON (user.id = question_followers.follower_id)
+     WHERE question.id = ?;
     SQL
 
-    $db.execute(query, @id).map do |follower| follower['follower']
-    end
-  end
+    DB.instance.execute(query, id).map { |follower| User.new(follower)}
 
-  def self.most_followed(n)
-    query = <<-SQL
-      SELECT question_id, COUNT(*)
-        FROM question_followers
-    GROUP BY question_id
-    ORDER BY count(*) DESC LIMIT ?
-    SQL
-
-    $db.execute(query, n).map do |question| question['question_id']
   end
 
   def most_replies(n)
     query = <<-SQL
-        SELECT prior_reply_id, COUNT(*)
+        SELECT *
           FROM question_replies
          WHERE question_id = ?
       GROUP BY prior_reply_id
-      ORDER BY COUNT(*) DESC LIMIT ?;
+      ORDER BY COUNT(*) DESC LIMIT ?
     SQL
 
-    $db.execute(query, @id, n).map do |question| question['prior_reply_id'] end
+    DB.instance.execute(query, @id, n).map { |reply| QuestionReplies.new(reply) }
+  end
+
+  def render
+    puts "id: #{id}, author_id: #{author_id}, title: #{title} \n body: #{body} \n num_likes: #{num_likes}, followers: #{followers}\n"
+  end
+
+
+  def save_insert()
+    insert = <<-SQL
+      INSERT INTO question('title','body', 'author_id')
+          VALUES (?, ?, ?)
+    SQL
+    DB.instance.execute(insert, @title, @body, @author_id)
+    @id = DB.instance.last_insert_row_id
+  end
+
+  def save_update
+    update = <<-SQL
+      UPDATE question
+      SET title = ?,
+          body = ?,
+          author_id = ?
+      WHERE id = ?
+    SQL
+    DB.instance.execute(insert,@title, @body, @author_id, @id)
+  end
+
+  def save
+    if @id.nil?
+      save_insert
+    else
+      save_update
+    end
   end
 
 end
-
-$db.execute( "select * from question" ) do |row|
-  p "Question ##{row['id']}: #{Question.new(row).num_likes}"
-end
-
 
 class QuestionFollowers
-end ### WHAT DO WE DO WITH THIS GUY.
+
+  def self.most_followed(n)
+    query = <<-SQL
+      SELECT question.id, question.title, question.body, question.author_id
+        FROM question
+        JOIN question_followers
+          ON (question.id = question_followers.question_id)
+          GROUP BY question.id
+          ORDER BY COUNT(*) DESC LIMIT ?
+    SQL
+
+    DB.instance.execute(query, n).map { |question| Question.new(question) }
+  end
+
+end
 
 class QuestionReplies
-  #attr_reader
-  def replies
+  attr_accessor :question_id, :prior_reply_id, :user_id, :reply
+  attr_reader :id
+
+  def initialize(row)
+    @id = row['id']
+    @question_id = row['question_id']
+    @prior_reply_id = row['prior_reply_id']
+    @user_id = row['user_id']
+    @reply = row['reply']
   end
+
 
   def self.most_replied
-    $db.execute("select prior_reply_id from question_replies GROUP BY prior_reply_id ORDER BY count(*) DESC LIMIT 1;").first['prior_reply_id']
+    query = <<-SQL
+      SELECT *
+        FROM question_replies
+       WHERE question_replies.id
+           IN (SELECT prior_reply_id
+                 FROM question_replies
+                 GROUP BY prior_reply_id
+                 ORDER BY count(*) DESC LIMIT 1)
+    SQL
+
+    QuestionReplies.new(DB.instance.execute(query).first)
   end
 
 end
-#
-# p QuestionReplies.most_replied
 
-
-class QuestionActions
-end
 
 class QuestionLikes
-  attr_reader :id, :user_id, :question_id
+  attr_reader :id
+  attr_accessor :user_id, :question_id
   def initialize(row)
     @id = row['id']
     @user_id = row['user_id']
     @question_id = row['question_id']
   end
+
+  def save_insert
+    insert = <<-SQL
+      INSERT INTO question_likes('user_id','question_id')
+          VALUES (?, ?)
+    SQL
+    DB.instance.execute(insert,@user_id,@user_id)
+    @id = DB.instance.last_insert_row_id
+  end
+
+  def save_update
+    update = <<-SQL
+      UPDATE question_likes
+      SET user_id = ?,
+          question_likes = ?,
+      WHERE id = ?
+    SQL
+    DB.instance.execute(insert,@user_id,@user_id,@id)
+  end
+
+  def save
+    if @id.nil?
+      save_insert
+    else
+      save_update
+    end
+  end
+
 end
-#
-$db.execute( "select * from user" ) do |row|
-  usr = User.new(row)
-  p usr
-end
-#
-# $db.execute( "select * from question_likes" ) do |row|
-#   like_obj = QuestionLikes.new(row)
-#   p like_obj
-# end
 
-
-
-
+p QuestionReplies.most_replied
